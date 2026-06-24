@@ -6,19 +6,24 @@
 // We use RSA-OAEP for key exchange and AES-GCM for message encryption.
 // This is a standard hybrid encryption scheme.
 
+import { get, set, del } from 'idb-keyval';
+
 export interface KeyPairJWK {
   publicKey: JsonWebKey;
-  privateKey: JsonWebKey;
+  privateKey: JsonWebKey; // Keeping interface for legacy/sync support, but usage will shift to IDB
 }
 
 export interface EncryptedPayload {
-  encryptedText: string; // Base64 AES-GCM encrypted content
-  iv: string; // Base64 AES initialization vector
-  encryptedKeys: { [userId: string]: string }; // User ID -> Base64 RSA-encrypted AES key
+  encryptedText: string;
+  iv: string;
+  encryptedKeys: { [userId: string]: string };
 }
 
 /**
  * Generates a new RSA-OAEP key pair for encryption and decryption.
+ * Uses 4096 bits for future-proof security.
+ * extractable must be true so we can use wrapKey for Device Sync,
+ * but the key will be stored directly in IndexedDB, not localStorage.
  */
 export async function generateSecureKeyPair(): Promise<{
   publicKey: CryptoKey;
@@ -27,50 +32,48 @@ export async function generateSecureKeyPair(): Promise<{
   const keyPair = await window.crypto.subtle.generateKey(
     {
       name: "RSA-OAEP",
-      modulusLength: 2048,
+      modulusLength: 4096,
       publicExponent: new Uint8Array([1, 0, 1]),
       hash: "SHA-256",
     },
-    true, // extractable
+    true, // extractable (required for wrapKey)
     ["encrypt", "decrypt"]
   );
   return keyPair;
 }
 
-/**
- * Exports a CryptoKey to JWK format for storage or backup.
- */
+// IndexedDB Storage Helpers
+export async function savePrivateKeyToIDB(userId: string, key: CryptoKey): Promise<void> {
+  await set(`private_key_${userId}`, key);
+}
+
+export async function getPrivateKeyFromIDB(userId: string): Promise<CryptoKey | undefined> {
+  return await get(`private_key_${userId}`);
+}
+
+export async function removePrivateKeyFromIDB(userId: string): Promise<void> {
+  await del(`private_key_${userId}`);
+}
+
 export async function exportKeyToJWK(key: CryptoKey): Promise<JsonWebKey> {
   return await window.crypto.subtle.exportKey("jwk", key);
 }
 
-/**
- * Imports a Public CryptoKey from JWK format.
- */
 export async function importPublicKeyFromJWK(jwk: JsonWebKey): Promise<CryptoKey> {
   return await window.crypto.subtle.importKey(
     "jwk",
     jwk,
-    {
-      name: "RSA-OAEP",
-      hash: "SHA-256",
-    },
+    { name: "RSA-OAEP", hash: "SHA-256" },
     true,
     ["encrypt"]
   );
 }
 
-/**
- * Imports a Private CryptoKey from JWK format.
- */
 export async function importPrivateKeyFromJWK(jwk: JsonWebKey): Promise<CryptoKey> {
   return await window.crypto.subtle.importKey(
     "jwk",
     jwk,
-    {
-      name: "RSA-OAEP",
-      hash: "SHA-256",
-    },
+    { name: "RSA-OAEP", hash: "SHA-256" },
     true,
     ["decrypt"]
   );
@@ -190,29 +193,26 @@ export async function encryptMessage(
 export async function decryptMessage(
   payload: EncryptedPayload,
   myUserId: string,
-  myPrivateKeyJWK: JsonWebKey
+  myPrivateKey: CryptoKey
 ): Promise<string> {
   const encryptedAesKeyBase64 = payload.encryptedKeys[myUserId];
   if (!encryptedAesKeyBase64) {
     throw new Error("No encrypted key found for current user. Message cannot be decrypted.");
   }
 
-  // 1. Decrypt AES key with RSA private key
-  const rsaPrivateKey = await importPrivateKeyFromJWK(myPrivateKeyJWK);
   const encryptedAesKeyBuffer = base64ToArrayBuffer(encryptedAesKeyBase64);
-  
-  const decryptedAesKeyRaw = await window.crypto.subtle.decrypt(
-    {
-      name: "RSA-OAEP",
-    },
-    rsaPrivateKey,
+
+  // 2. Decrypt AES key with RSA private key
+  const rawAesKeyBuffer = await window.crypto.subtle.decrypt(
+    { name: "RSA-OAEP" },
+    myPrivateKey,
     encryptedAesKeyBuffer
   );
 
   // 2. Import raw AES key back to CryptoKey
   const aesKey = await window.crypto.subtle.importKey(
     "raw",
-    decryptedAesKeyRaw,
+    rawAesKeyBuffer,
     {
       name: "AES-GCM",
       length: 256,
@@ -393,4 +393,24 @@ export async function decryptWithSyncKey(payload: string, base64Key: string): Pr
 
   const decoder = new TextDecoder();
   return decoder.decode(decrypted);
+}
+export async function wrapPrivateKey(privateKey: CryptoKey, syncAesKeyBase64: string): Promise<string> {
+  const rawKey = base64ToArrayBuffer(syncAesKeyBase64);
+  const syncAesKey = await window.crypto.subtle.importKey("raw", rawKey, { name: "AES-GCM", length: 256 }, false, ["wrapKey"]);
+  const iv = window.crypto.getRandomValues(new Uint8Array(12));
+  const wrapped = await window.crypto.subtle.wrapKey(
+    "jwk", privateKey, syncAesKey, { name: "AES-GCM", iv }
+  );
+  return arrayBufferToBase64(iv.buffer) + ":" + arrayBufferToBase64(wrapped);
+}
+
+export async function unwrapPrivateKey(wrappedData: string, syncAesKeyBase64: string): Promise<CryptoKey> {
+  const [ivBase64, wrappedBase64] = wrappedData.split(":");
+  const rawKey = base64ToArrayBuffer(syncAesKeyBase64);
+  const syncAesKey = await window.crypto.subtle.importKey("raw", rawKey, { name: "AES-GCM", length: 256 }, false, ["unwrapKey"]);
+  const iv = base64ToArrayBuffer(ivBase64);
+  const wrapped = base64ToArrayBuffer(wrappedBase64);
+  return await window.crypto.subtle.unwrapKey(
+    "jwk", wrapped, syncAesKey, { name: "AES-GCM", iv: new Uint8Array(iv) }, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["decrypt"]
+  );
 }

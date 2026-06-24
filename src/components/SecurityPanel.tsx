@@ -27,6 +27,7 @@ import DeviceSyncOverlay from "./DeviceSyncOverlay";
 interface SecurityPanelProps {
   currentUser: AppUser;
   myPrivateKeyJWK: JsonWebKey | null;
+  myPrivateKey: CryptoKey | null;
   onClose: () => void;
   onGenerateNewKeys: () => Promise<void>;
   onImportPrivateKey: (privateKeyJWK: JsonWebKey) => Promise<boolean>;
@@ -35,6 +36,7 @@ interface SecurityPanelProps {
 export default function SecurityPanel({
   currentUser,
   myPrivateKeyJWK,
+  myPrivateKey,
   onClose,
   onGenerateNewKeys,
   onImportPrivateKey
@@ -347,7 +349,7 @@ export default function SecurityPanel({
         <DeviceSyncOverlay
           mode="host"
           currentUser={currentUser}
-          myPrivateKeyJWK={myPrivateKeyJWK}
+          myPrivateKey={myPrivateKey}
           onComplete={() => setShowHostSyncOverlay(false)}
           onCancel={() => setShowHostSyncOverlay(false)}
         />

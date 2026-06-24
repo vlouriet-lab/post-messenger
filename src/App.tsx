@@ -77,8 +77,9 @@ export default function App() {
   const [loginError, setLoginError] = useState<string | null>(null);
   const { t } = useTranslation();
 
-  // Private key state (stored in local storage)
+  // Private key state
   const [myPrivateKeyJWK, setMyPrivateKeyJWK] = useState<JsonWebKey | null>(null);
+  const [myPrivateKey, setMyPrivateKey] = useState<CryptoKey | null>(null);
   const [isPrivateKeyMissing, setIsPrivateKeyMissing] = useState(false);
   const [showGuestSyncOverlay, setShowGuestSyncOverlay] = useState(false);
 
@@ -165,16 +166,16 @@ export default function App() {
       let keyPairJWK = null;
       let pubKeyJWK: JsonWebKey | null = null;
       
-      // Try to read Private Key from LocalStorage
-      const localPrivKeyStr = localStorage.getItem(`secure_mailbox_private_key_${firebaseUser.uid}`);
-      let localPrivKey: JsonWebKey | null = null;
-      if (localPrivKeyStr) {
+      // Try to read Private Key from IndexedDB
+      const localPrivKey = await import("./lib/crypto").then(m => m.getPrivateKeyFromIDB(firebaseUser.uid));
+      if (localPrivKey) {
         try {
-          localPrivKey = JSON.parse(localPrivKeyStr);
-          setMyPrivateKeyJWK(localPrivKey);
+          const jwk = await import("./lib/crypto").then(m => m.exportKeyToJWK(localPrivKey));
+          setMyPrivateKey(localPrivKey);
+          setMyPrivateKeyJWK(jwk);
           setIsPrivateKeyMissing(false);
         } catch (e) {
-          console.error("Failed to parse private key from localStorage", e);
+          console.error("Failed to parse private key from IndexedDB", e);
         }
       }
 
@@ -187,6 +188,7 @@ export default function App() {
           setLoadingStatus("Keys not found. Generating new keypair...");
           const keys = await generateKeysAndSave(firebaseUser.uid);
           pubKeyJWK = keys.pub;
+          setMyPrivateKey(keys.privKey);
           setMyPrivateKeyJWK(keys.priv);
         } else if (!localPrivKey) {
           // Public key exists in cloud but Private key is missing locally
@@ -248,14 +250,15 @@ export default function App() {
     }
   };
 
-  // Helper: Generates RSA KeyPair, exports to JWK, saves public to firestore schema, saves private to localStorage
+  // Helper: Generates RSA KeyPair, exports to JWK, saves public to firestore schema, saves private to IndexedDB
   const generateKeysAndSave = async (userId: string) => {
-    const keyPair = await generateSecureKeyPair();
-    const pubJWK = await exportKeyToJWK(keyPair.publicKey);
-    const privJWK = await exportKeyToJWK(keyPair.privateKey);
+    const cryptoLib = await import("./lib/crypto");
+    const keyPair = await cryptoLib.generateSecureKeyPair();
+    const pubJWK = await cryptoLib.exportKeyToJWK(keyPair.publicKey);
+    const privJWK = await cryptoLib.exportKeyToJWK(keyPair.privateKey);
 
-    localStorage.setItem(`secure_mailbox_private_key_${userId}`, JSON.stringify(privJWK));
-    return { pub: pubJWK, priv: privJWK };
+    await cryptoLib.savePrivateKeyToIDB(userId, keyPair.privateKey);
+    return { pub: pubJWK, priv: privJWK, privKey: keyPair.privateKey };
   };
 
   // Online status tracker
@@ -483,7 +486,8 @@ export default function App() {
               iv: msg.iv,
               encryptedKeys: msg.encryptedKeys
             };
-            const decrypted = await decryptMessage(payload, currentUser.uid, myPrivateKeyJWK);
+            if (!payload.encryptedKeys[currentUser.uid]) continue;
+            const decrypted = await import("./lib/crypto").then(m => m.decryptMessage(payload, currentUser.uid, myPrivateKey));
             decMap[msg.id] = decrypted;
             errMap[msg.id] = false;
           } catch (err) {
@@ -499,7 +503,7 @@ export default function App() {
     };
 
     decryptAll();
-  }, [messages, currentUser, myPrivateKeyJWK]);
+  }, [messages, currentUser, myPrivateKey]);
 
   // Initiate a new Chat / select existing chat with an AppUser
   const handleStartNewDirectChat = async (targetUser: AppUser): Promise<string | null> => {
@@ -658,7 +662,7 @@ export default function App() {
 
   // Send E2EE message
   const handleSendMessage = async (text: string, fileAttachment?: any) => {
-    if (!currentUser || !activeChatId || !myPrivateKeyJWK) return;
+    if (!currentUser || !activeChatId || !myPrivateKey) return;
 
     const chat = chats.find((c) => c.id === activeChatId);
     if (!chat) return;
@@ -692,7 +696,12 @@ export default function App() {
         const attachmentRef = ref(storage, `attachments/${activeChatId}/${Date.now()}_${file.name}`);
         setLoadingStatus("Uploading secure attachment...");
         
-        const uploadTask = uploadBytesResumable(attachmentRef, encryptedBlob);
+        const metadata = {
+          customMetadata: {
+            participants: chat.participants.join(",")
+          }
+        };
+        const uploadTask = uploadBytesResumable(attachmentRef, encryptedBlob, metadata);
         
         await new Promise<void>((resolve, reject) => {
           uploadTask.on('state_changed', 
@@ -826,6 +835,7 @@ export default function App() {
     if (!currentUser) return;
     try {
       const keys = await generateKeysAndSave(currentUser.uid);
+      setMyPrivateKey(keys.privKey);
       setMyPrivateKeyJWK(keys.priv);
       setIsPrivateKeyMissing(false);
 
@@ -882,10 +892,12 @@ export default function App() {
       const payload = await encryptMessage(testText, recipients);
       
       try {
-        const decrypted = await decryptMessage(payload, currentUser.uid, importedJWK);
+        const importedKey = await import("./lib/crypto").then(m => m.importPrivateKeyFromJWK(importedJWK));
+        const decrypted = await import("./lib/crypto").then(m => m.decryptMessage(payload, currentUser.uid, importedKey));
         if (decrypted === testText) {
           // Success! Private key matches public key perfectly
-          localStorage.setItem(`secure_mailbox_private_key_${currentUser.uid}`, JSON.stringify(importedJWK));
+          await import("./lib/crypto").then(m => m.savePrivateKeyToIDB(currentUser.uid, importedKey));
+          setMyPrivateKey(importedKey);
           setMyPrivateKeyJWK(importedJWK);
           setIsPrivateKeyMissing(false);
           return true;
@@ -1071,6 +1083,7 @@ return (
             <SecurityPanel
               currentUser={currentUser}
               myPrivateKeyJWK={myPrivateKeyJWK}
+              myPrivateKey={myPrivateKey}
               onClose={() => setShowSecurityPanel(false)}
               onGenerateNewKeys={handleGenerateNewKeys}
               onImportPrivateKey={handleImportPrivateKey}
@@ -1091,12 +1104,14 @@ return (
             <DeviceSyncOverlay
               mode="guest"
               currentUser={currentUser}
-              onComplete={(privKey) => {
-                if (privKey) {
-                  localStorage.setItem(`secure_mailbox_private_key_${currentUser.uid}`, JSON.stringify(privKey));
-                  setMyPrivateKeyJWK(privKey);
+              onComplete={async (unwrappedKey) => {
+                setShowGuestSyncOverlay(false);
+                if (unwrappedKey && currentUser) {
+                  await import("./lib/crypto").then(m => m.savePrivateKeyToIDB(currentUser.uid, unwrappedKey));
+                  const privKeyJWK = await import("./lib/crypto").then(m => m.exportKeyToJWK(unwrappedKey));
+                  setMyPrivateKey(unwrappedKey);
+                  setMyPrivateKeyJWK(privKeyJWK);
                   setIsPrivateKeyMissing(false);
-                  setShowGuestSyncOverlay(false);
                 }
               }}
               onCancel={() => setShowGuestSyncOverlay(false)}

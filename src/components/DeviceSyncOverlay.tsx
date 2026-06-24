@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { doc, setDoc, onSnapshot, serverTimestamp } from "firebase/firestore";
 import { db } from "../lib/firebase";
-import { generateSyncKey, encryptWithSyncKey, decryptWithSyncKey } from "../lib/crypto";
+import { generateSyncKey, wrapPrivateKey, unwrapPrivateKey } from "../lib/crypto";
 import { AppUser } from "../types";
 import { useTranslation } from "react-i18next";
 import { ShieldCheck, X, Camera, Copy, CheckCircle2, RefreshCw } from "lucide-react";
@@ -10,15 +10,15 @@ import { ShieldCheck, X, Camera, Copy, CheckCircle2, RefreshCw } from "lucide-re
 interface DeviceSyncOverlayProps {
   mode: "host" | "guest";
   currentUser: AppUser | { uid: string, displayName: string };
-  myPrivateKeyJWK?: JsonWebKey | null;
-  onComplete: (privKeyJWK?: JsonWebKey) => void;
+  myPrivateKey?: CryptoKey | null;
+  onComplete: (privKey?: CryptoKey) => void;
   onCancel: () => void;
 }
 
 export default function DeviceSyncOverlay({
   mode,
   currentUser,
-  myPrivateKeyJWK,
+  myPrivateKey,
   onComplete,
   onCancel
 }: DeviceSyncOverlayProps) {
@@ -31,7 +31,7 @@ export default function DeviceSyncOverlay({
 
   // Host Mode Initialization
   useEffect(() => {
-    if (mode === "host" && myPrivateKeyJWK) {
+    if (mode === "host" && myPrivateKey) {
       const initHost = async () => {
         const id = Math.random().toString(36).substring(2, 10).toUpperCase();
         const key = await generateSyncKey();
@@ -41,6 +41,7 @@ export default function DeviceSyncOverlay({
         const syncRef = doc(db, "device_sync", id);
         await setDoc(syncRef, {
           hostReady: true,
+          ownerId: currentUser.uid,
           timestamp: serverTimestamp()
         });
 
@@ -50,9 +51,8 @@ export default function DeviceSyncOverlay({
           if (data.guestReady && !data.payload) {
             setStatus("connected");
             try {
-              // Encrypt the private key JWK using the AES key
-              const privKeyString = JSON.stringify(myPrivateKeyJWK);
-              const encryptedPayload = await encryptWithSyncKey(privKeyString, key);
+              // Wrap the private key securely without exposing JWK string
+              const encryptedPayload = await wrapPrivateKey(myPrivateKey, key);
               await setDoc(syncRef, { payload: encryptedPayload }, { merge: true });
               setStatus("done");
               setTimeout(() => onComplete(), 2000);
@@ -65,7 +65,7 @@ export default function DeviceSyncOverlay({
       };
       initHost();
     }
-  }, [mode, myPrivateKeyJWK]);
+  }, [mode, myPrivateKey]);
 
   // Guest Mode Connection
   const handleGuestConnect = async () => {
@@ -90,10 +90,9 @@ export default function DeviceSyncOverlay({
         const data = snap.data();
         if (data.payload) {
           try {
-            const decryptedString = await decryptWithSyncKey(data.payload, key);
-            const jwk = JSON.parse(decryptedString) as JsonWebKey;
+            const unwrappedKey = await unwrapPrivateKey(data.payload, key);
             setStatus("done");
-            setTimeout(() => onComplete(jwk), 1000);
+            setTimeout(() => onComplete(unwrappedKey), 1000);
           } catch (err) {
             console.error("Decryption failed", err);
             setErrorMsg("Failed to decrypt keys. Invalid sync code.");
