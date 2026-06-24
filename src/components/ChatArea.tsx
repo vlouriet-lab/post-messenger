@@ -25,7 +25,8 @@ import {
   Mic,
   Camera,
   Square,
-  Trash2
+  Trash2,
+  Eraser
 } from "lucide-react";
 import { AppUser, Message, Chat } from "../types";
 import CallOverlay from "./CallOverlay";
@@ -33,7 +34,7 @@ import SecureAttachment from "./SecureAttachment";
 import MessageBubble from "./MessageBubble";
 import { useTranslation } from "react-i18next";
 import { useMediaRecorder } from "../hooks/useMediaRecorder";
-import { doc, updateDoc, arrayUnion, onSnapshot } from "firebase/firestore";
+import { doc, updateDoc, arrayUnion, onSnapshot, serverTimestamp } from "firebase/firestore";
 import { db } from "../lib/firebase";
 
 interface ChatAreaProps {
@@ -143,6 +144,19 @@ export default function ChatArea({
     };
     markUnreadAsRead();
   }, [messages, chat.id, currentUser.uid]);
+
+  const handleClearHistory = async () => {
+    if (!window.confirm(t("confirm_clear_history", "Are you sure you want to clear your chat history? This will only clear it for you."))) {
+      return;
+    }
+    try {
+      await updateDoc(doc(db, "chats", chat.id), {
+        [`clearedAt.${currentUser.uid}`]: serverTimestamp()
+      });
+    } catch (e) {
+      console.error("Failed to clear history", e);
+    }
+  };
 
   const formatLastSeen = (timestamp: any) => {
     if (!timestamp) return "";
@@ -351,6 +365,14 @@ export default function ChatArea({
               </button>
             </>
           )}
+
+          <button
+            onClick={handleClearHistory}
+            className="p-2 sm:p-3 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition cursor-pointer"
+            title={t("clear_history", "Clear History")}
+          >
+            <Eraser className="w-4 h-4 sm:w-5 sm:h-5" />
+          </button>
         </div>
       </div>
 

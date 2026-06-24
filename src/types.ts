@@ -25,6 +25,7 @@ export interface Chat {
   groupName?: string;
   admins?: string[]; // Array of admin user IDs
   deletedFor?: string[]; // Array of user IDs who deleted this chat
+  clearedAt?: { [uid: string]: any }; // Timestamp when user cleared history
 }
 
 export interface CallSignal {
@@ -63,6 +64,8 @@ export interface Message {
   isSystem?: boolean;
   systemText?: string;
   systemAction?: string;
+  isCall?: boolean;
+  callStatus?: string;
   callType?: string;
   callDuration?: number;
   

@@ -17,7 +17,7 @@ import {
   LogOut
 } from "lucide-react";
 import { AppUser, Chat } from "../types";
-import { collection, query, where, getDocs, limit, or, and } from "firebase/firestore";
+import { collection, query, where, getDocs, limit, or, and, deleteDoc, doc } from "firebase/firestore";
 import { db, handleFirestoreError, OperationType } from "../lib/firebase";
 import { useTranslation } from "react-i18next";
 import SettingsToggle from "./SettingsToggle";
@@ -138,6 +138,20 @@ export default function Sidebar({
       return t("yesterday");
     }
     return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  };
+
+  const handleDeleteChat = async (e: React.MouseEvent, chat: Chat) => {
+    e.preventDefault();
+    if (window.confirm(t("confirm_delete_chat", "Are you sure you want to completely delete this chat? This action cannot be undone."))) {
+      try {
+        await deleteDoc(doc(db, "chats", chat.id));
+        if (activeChatId === chat.id) {
+          onSelectChat(null);
+        }
+      } catch (err) {
+        console.error("Failed to delete chat", err);
+      }
+    }
   };
 
   return (
@@ -307,6 +321,8 @@ export default function Sidebar({
               <button
                 key={chat.id}
                 onClick={() => onSelectChat(chat.id)}
+                onDoubleClick={(e) => handleDeleteChat(e, chat)}
+                onContextMenu={(e) => handleDeleteChat(e, chat)}
                 className={`w-full p-3.5 flex items-start gap-3 text-left border-l-2 transition ${
                   isActive 
                     ? "bg-blue-50/40 dark:bg-blue-900/20 border-blue-600" 

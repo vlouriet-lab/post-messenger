@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { QRCodeSVG } from "qrcode.react";
+import { Scanner } from "@yudiel/react-qr-scanner";
 import { doc, setDoc, onSnapshot, serverTimestamp } from "firebase/firestore";
 import { db } from "../lib/firebase";
 import { generateSyncKey, wrapPrivateKey, unwrapPrivateKey } from "../lib/crypto";
@@ -27,6 +28,7 @@ export default function DeviceSyncOverlay({
   const [guestInput, setGuestInput] = useState("");
   const [status, setStatus] = useState<"waiting" | "connected" | "done" | "error">("waiting");
   const [errorMsg, setErrorMsg] = useState("");
+  const [showScanner, setShowScanner] = useState(false);
   const { t } = useTranslation();
 
   // Host Mode Initialization
@@ -170,20 +172,52 @@ export default function DeviceSyncOverlay({
                 {errorMsg}
               </div>
             )}
-            <input
-              type="text"
-              placeholder="Paste Sync Code (SESSION:KEY)"
-              value={guestInput}
-              onChange={(e) => setGuestInput(e.target.value)}
-              className="w-full p-3 mb-4 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl font-mono text-sm text-slate-800 dark:text-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
-            />
-            <button
-              onClick={handleGuestConnect}
-              disabled={!guestInput.trim()}
-              className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold transition disabled:opacity-50"
-            >
-              Connect & Sync
-            </button>
+            
+            {showScanner ? (
+              <div className="w-full bg-black rounded-xl overflow-hidden mb-4 relative aspect-square max-h-[300px]">
+                <Scanner 
+                  onScan={(result) => {
+                    if (result && result.length > 0) {
+                      setGuestInput(result[0].rawValue);
+                      setShowScanner(false);
+                      // Give it a tiny delay to update state before auto-connecting
+                      setTimeout(() => handleGuestConnect(), 100);
+                    }
+                  }}
+                  formats={['qr_code']}
+                />
+                <button 
+                  onClick={() => setShowScanner(false)}
+                  className="absolute bottom-4 left-1/2 -translate-x-1/2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-full shadow-lg z-10"
+                >
+                  Cancel Scanner
+                </button>
+              </div>
+            ) : (
+              <>
+                <input
+                  type="text"
+                  placeholder="Paste Sync Code (SESSION:KEY)"
+                  value={guestInput}
+                  onChange={(e) => setGuestInput(e.target.value)}
+                  className="w-full p-3 mb-4 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl font-mono text-sm text-slate-800 dark:text-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+                <button
+                  onClick={() => setShowScanner(true)}
+                  className="w-full py-3 mb-3 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl font-bold transition flex items-center justify-center gap-2"
+                >
+                  <Camera className="w-5 h-5" />
+                  Scan QR Code
+                </button>
+                <button
+                  onClick={handleGuestConnect}
+                  disabled={!guestInput.trim()}
+                  className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold transition disabled:opacity-50"
+                >
+                  Connect & Sync
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>

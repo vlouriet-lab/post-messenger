@@ -15,7 +15,11 @@ service cloud.firestore {
       // Messages collection inside a chat
       match /messages/{messageId} {
         allow read, create: if request.auth != null && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
-        allow update, delete: if request.auth != null && request.auth.uid == resource.data.senderId;
+        allow update: if request.auth != null && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants && (
+          request.auth.uid == resource.data.senderId ||
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deletedFor', 'readBy'])
+        );
+        allow delete: if request.auth != null && request.auth.uid == resource.data.senderId;
       }
     }
     // Calls collection

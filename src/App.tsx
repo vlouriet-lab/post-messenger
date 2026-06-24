@@ -104,6 +104,7 @@ export default function App() {
   // Call states
   const [incomingCall, setIncomingCall] = useState<CallSignal | null>(null);
   const [activeCall, setActiveCall] = useState<CallSignal | null>(null);
+  const [callHistory, setCallHistory] = useState<CallSignal[]>([]);
 
   // Deep-link processing
   useEffect(() => {
@@ -342,6 +343,13 @@ export default function App() {
       )
     );
     const unsubscribe = onSnapshot(q, (snapshot) => {
+      // Update call history
+      const history: CallSignal[] = [];
+      snapshot.forEach(docSnap => {
+        history.push({ id: docSnap.id, ...docSnap.data() } as CallSignal);
+      });
+      setCallHistory(history.sort((a, b) => b.timestamp - a.timestamp));
+
       snapshot.docChanges().forEach((change) => {
         const callData = { id: change.doc.id, ...change.doc.data() } as CallSignal;
         
@@ -397,10 +405,10 @@ export default function App() {
         }
 
         // We need to fetch the actual last message document to decrypt it
-        // To keep it light, we retrieve the messages and try to decrypt
+        // To keep it light, we retrieve the last 15 messages and find the most recent one that is NOT deleted or cleared
         try {
           const msgRef = collection(db, "chats", chat.id, "messages");
-          const q = query(msgRef, orderBy("timestamp", "desc"), limit(1));
+          const q = query(msgRef, orderBy("timestamp", "desc"), limit(15));
           let snap;
           try {
             snap = await getDocs(q);
@@ -410,22 +418,45 @@ export default function App() {
           }
 
           if (snap && !snap.empty) {
-            const firstDoc = snap.docs[0];
-            const msgData = firstDoc.data() as Message;
+            const clearedAtTimestamp = chat.clearedAt?.[currentUser.uid] || null;
+            let validMsgData = null;
 
-            if (msgData.isSystem) {
-              newPreviews[chat.id] = msgData.systemText || "";
-            } else if (msgData.encryptedText && msgData.iv && msgData.encryptedKeys) {
-              const decrypted = await decryptMessage(
-                {
-                  encryptedText: msgData.encryptedText,
-                  iv: msgData.iv,
-                  encryptedKeys: msgData.encryptedKeys
-                },
-                currentUser.uid,
-                myPrivateKeyJWK
-              );
-              newPreviews[chat.id] = decrypted;
+            for (const doc of snap.docs) {
+              const data = doc.data() as Message;
+              
+              // Skip if deleted for this user
+              if (data.deletedFor && data.deletedFor.includes(currentUser.uid)) {
+                continue;
+              }
+              
+              // Skip if before clearedAt
+              if (clearedAtTimestamp && data.timestamp && typeof clearedAtTimestamp.toMillis === 'function' && typeof data.timestamp.toMillis === 'function') {
+                if (data.timestamp.toMillis() <= clearedAtTimestamp.toMillis()) {
+                  continue;
+                }
+              }
+              
+              validMsgData = data;
+              break; // Found the latest valid message
+            }
+
+            if (validMsgData) {
+              if (validMsgData.isSystem) {
+                newPreviews[chat.id] = validMsgData.systemText || "";
+              } else if (validMsgData.encryptedText && validMsgData.iv && validMsgData.encryptedKeys) {
+                const decrypted = await decryptMessage(
+                  {
+                    encryptedText: validMsgData.encryptedText,
+                    iv: validMsgData.iv,
+                    encryptedKeys: validMsgData.encryptedKeys
+                  },
+                  currentUser.uid,
+                  myPrivateKeyJWK
+                );
+                newPreviews[chat.id] = decrypted;
+              }
+            } else {
+              newPreviews[chat.id] = "History cleared";
             }
           }
         } catch (e) {
@@ -754,7 +785,7 @@ export default function App() {
       try {
         await updateDoc(chatRef, {
           lastMessage: {
-            textPreview: text ? `🔒 ${text.substring(0, 30)}${text.length > 30 ? "..." : ""}` : (finalAttachmentData ? `🔒 File: ${finalAttachmentData.name}` : `🔒 Encrypted Message`),
+            textPreview: text ? "🔒 Encrypted Message" : "📎 Secure Attachment",
             senderId: currentUser.uid,
             timestamp: serverTimestamp(),
             isSystem: false
@@ -1029,10 +1060,48 @@ return (
               chat={chats.find((c) => c.id === activeChatId)!}
               currentUser={currentUser}
               onBack={() => setActiveChatId(null)}
-              messages={messages}
+              messages={(() => {
+                const activeChat = chats.find((c) => c.id === activeChatId)!;
+                const activeChatClearedAt = activeChat.clearedAt?.[currentUser.uid];
+                // Map calls for this chat
+                const chatCalls = callHistory.filter(call => 
+                  !activeChat.isGroup && // Calls are 1-1 only currently
+                  ((call.callerId === currentUser.uid && activeChat.participants.includes(call.calleeId)) ||
+                   (call.calleeId === currentUser.uid && activeChat.participants.includes(call.callerId)))
+                ).map(call => {
+                  const callTs = call.timestamp;
+                  const callMsg: Message = {
+                    id: call.id,
+                    senderId: call.callerId,
+                    timestamp: { toDate: () => new Date(callTs), toMillis: () => callTs },
+                    isSystem: true,
+                    isCall: true,
+                    callStatus: call.status,
+                    callType: call.type,
+                    callDuration: call.status === 'ended' && call.answer?.timestamp ? (callTs - call.answer.timestamp) : 0
+                  };
+                  return callMsg;
+                });
+
+                let combined = [...messages, ...chatCalls];
+                
+                if (activeChatClearedAt) {
+                  const clearedTs = activeChatClearedAt.toMillis ? activeChatClearedAt.toMillis() : new Date(activeChatClearedAt).getTime();
+                  combined = combined.filter(m => {
+                    const mTs = m.timestamp?.toMillis ? m.timestamp.toMillis() : new Date(m.timestamp).getTime();
+                    return mTs > clearedTs;
+                  });
+                }
+                
+                return combined.sort((a, b) => {
+                  const aTs = a.timestamp?.toMillis ? a.timestamp.toMillis() : new Date(a.timestamp).getTime();
+                  const bTs = b.timestamp?.toMillis ? b.timestamp.toMillis() : new Date(b.timestamp).getTime();
+                  return aTs - bTs;
+                });
+              })()}
               myPrivateKeyJWK={myPrivateKeyJWK}
               onSendMessage={handleSendMessage}
-              onVerifyFingerprint={(user) => setFingerprintVerifyUser(user)}
+              onVerifyFingerprint={setFingerprintVerifyUser}
               onStartCall={handleStartCall}
               decryptedMessages={decryptedMessages}
               decryptionErrors={decryptionErrors}

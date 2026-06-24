@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { Message, Chat, AppUser } from "../types";
-import { AlertCircle, Info, File, Download, Smile, Trash2, MoreVertical, CheckCheck, Check } from "lucide-react";
+import { AlertCircle, Info, File, Download, Smile, Trash2, MoreVertical, CheckCheck, Check, Phone, PhoneMissed, Video, PhoneCall } from "lucide-react";
 import SecureAttachment from "./SecureAttachment";
 import { useTranslation } from "react-i18next";
 
@@ -17,6 +17,7 @@ interface MessageBubbleProps {
   onDeleteForMe: (msgId: string) => void;
   onDeleteForEveryone: (msgId: string) => void;
   onReact: (msgId: string, emoji: string) => void;
+  onStartCall?: (type: "audio" | "video", targetId: string) => void;
 }
 
 export default function MessageBubble({
@@ -30,7 +31,8 @@ export default function MessageBubble({
   myPrivateKeyJWK,
   onDeleteForMe,
   onDeleteForEveryone,
-  onReact
+  onReact,
+  onStartCall
 }: MessageBubbleProps) {
   const { t } = useTranslation();
   const [showOptions, setShowOptions] = useState(false);
@@ -71,6 +73,69 @@ export default function MessageBubble({
   };
 
   const canDeleteForEveryone = isMe || (isGroup && chat.admins?.includes(currentUser.uid));
+
+  if (msg.isSystem && msg.isCall) {
+    const isMissed = msg.callStatus === "missed";
+    const isRejected = msg.callStatus === "rejected";
+    const isVideo = msg.callType === "video";
+    
+    let Icon = Phone;
+    if (isVideo) Icon = Video;
+    if (isMissed) Icon = PhoneMissed;
+
+    let statusText = isMe ? t("call_outgoing", "Outgoing Call") : t("call_incoming", "Incoming Call");
+    if (isMissed) statusText = t("call_missed", "Missed Call");
+    if (isRejected) statusText = t("call_rejected", "Declined Call");
+
+    const formatDuration = (ms: number) => {
+      const s = Math.floor(ms / 1000);
+      const m = Math.floor(s / 60);
+      const h = Math.floor(m / 60);
+      if (h > 0) return `${h}:${(m%60).toString().padStart(2,'0')}:${(s%60).toString().padStart(2,'0')}`;
+      return `${m}:${(s%60).toString().padStart(2,'0')}`;
+    };
+
+    return (
+      <div className={`flex ${isMe ? "justify-end" : "justify-start"} my-3`}>
+        <div className={`flex flex-col gap-2 p-3.5 rounded-2xl min-w-[180px] max-w-[80%] shadow-sm ${
+          isMe 
+            ? "bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200"
+            : "bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200"
+        }`}>
+          <div className="flex items-center gap-3">
+            <div className={`p-2 rounded-full ${
+              isMissed || isRejected ? "bg-rose-100 text-rose-600 dark:bg-rose-900/30 dark:text-rose-400" 
+              : "bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400"
+            }`}>
+              <Icon className="w-5 h-5" />
+            </div>
+            <div className="flex flex-col">
+              <span className={`text-sm font-semibold ${isMissed || isRejected ? "text-rose-600 dark:text-rose-400" : ""}`}>
+                {statusText}
+              </span>
+              <span className="text-xs text-slate-500">
+                {msg.callDuration ? formatDuration(msg.callDuration) : (isMissed || isRejected ? "" : t("call_ended", "Ended"))}
+              </span>
+            </div>
+          </div>
+          
+          {!isMe && onStartCall && (
+            <button 
+              onClick={() => onStartCall(msg.callType as "audio"|"video" || "audio", msg.senderId)}
+              className="mt-1 w-full py-2 bg-blue-50 hover:bg-blue-100 dark:bg-blue-900/20 dark:hover:bg-blue-900/40 text-blue-600 dark:text-blue-400 text-sm font-semibold rounded-xl transition flex justify-center items-center gap-2"
+            >
+              <PhoneCall className="w-4 h-4" />
+              {t("call_back", "Call Back")}
+            </button>
+          )}
+
+          <div className={`text-[9px] text-right text-slate-400 uppercase mt-1 ${!isMe && onStartCall ? "border-t border-slate-100 dark:border-slate-700 pt-1" : ""}`}>
+             {msg.timestamp ? (msg.timestamp.toDate ? msg.timestamp.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : ""}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
