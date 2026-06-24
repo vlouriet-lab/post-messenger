@@ -59,7 +59,8 @@ import {
   encryptMessage, 
   decryptMessage,
   encryptFile,
-  EncryptedPayload
+  EncryptedPayload,
+  getPublicKeyFingerprint
 } from "./lib/crypto";
 import { AppUser, Chat, Message, CallSignal, AppUserSummary } from "./types";
 import CallOverlay from "./components/CallOverlay";
@@ -1244,15 +1245,4 @@ function FingerprintVerifyDialog({ targetUser, currentUser, onClose }: Fingerpri
       </div>
     </div>
   );
-}
-
-// Calculate fingerprint helper
-async function getPublicKeyFingerprint(jwk: JsonWebKey): Promise<string> {
-  const jsonStr = JSON.stringify(jwk, Object.keys(jwk).sort());
-  const encoder = new TextEncoder();
-  const data = encoder.encode(jsonStr);
-  const hashBuffer = await window.crypto.subtle.digest("SHA-256", data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  const hashHex = hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
-  return hashHex.toUpperCase().match(/.{1,4}/g)?.join("-") || hashHex;
 }

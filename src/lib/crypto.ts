@@ -84,13 +84,20 @@ export async function importPrivateKeyFromJWK(jwk: JsonWebKey): Promise<CryptoKe
  * This is used for "security verification codes" (like in Signal).
  */
 export async function getPublicKeyFingerprint(jwk: JsonWebKey): Promise<string> {
-  const jsonStr = JSON.stringify(jwk, Object.keys(jwk).sort());
-  const encoder = new TextEncoder();
-  const data = encoder.encode(jsonStr);
-  const hashBuffer = await window.crypto.subtle.digest("SHA-256", data);
+  // 1. Import JWK to CryptoKey
+  const publicKey = await window.crypto.subtle.importKey(
+    "jwk",
+    jwk,
+    { name: "RSA-OAEP", hash: "SHA-256" },
+    true,
+    ["encrypt"]
+  );
+  // 2. Export to SPKI format
+  const spki = await window.crypto.subtle.exportKey("spki", publicKey);
+  // 3. Hash the SPKI binary representation
+  const hashBuffer = await window.crypto.subtle.digest("SHA-256", spki);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
-  const hashHex = hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
-  // Format as groups of 4 characters: XXXX-XXXX-XXXX-...
+  const hashHex = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
   return hashHex.toUpperCase().match(/.{1,4}/g)?.join("-") || hashHex;
 }
 

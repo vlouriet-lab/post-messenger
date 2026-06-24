@@ -1,0 +1,227 @@
+<USER_REQUEST>
+# Security Audit Report — Post Messenger
+**Дата:** Июнь 2025  
+**Область проверки:** Firestore Rules, Storage Rules, Crypto Layer (encryption.ts)  
+**Статус проекта:** Active Development / Pre-release
+
+---
+
+## Резюме
+
+Post Messenger реализует гибридную схему шифрования (RSA-OAEP + AES-GCM) на базе Web Crypto API — это технически корректный и современный подход. Криптографическое ядро написано грамотно. Вместе с тем в ходе проверки выявлено **9 проблем**, из которых 3 являются критическими и требуют устранения до публичного релиза.
+
+---
+
+## Критические уязвимости
+
+### 1. Приватный RSA-ключ доступен для экспорта
+
+**Файл:** `encryption.ts` → `generateSecureKeyPair()`
+
+Ключевая пара генерируется с флагом `extractable: true`. Это означает, что любой JavaScript-код, выполняющийся на странице — в том числе внедрённый через XSS — может вызвать `crypto.subtle.exportKey()` и получить приватный ключ в сыром виде. В контексте E2EE мессенджера это равнозначно полной компрометации: атакующий расшифрует всю историю переписки пользователя.
+
+**Путь решения:** Хранить `CryptoKey` объект напрямую в IndexedDB без экспорта (`extractable: false`). Если резервное копирование ключа необходимо, использовать `wrapKey` с ключом, производным от пароля пользователя (PBKDF2 или Argon2):
+
+```ts
+// Оборачиваем приватный ключ паролем пользователя
+const passwordKey = await deriveKeyFromPassword(userPassword);
+const wrappedKey = await crypto.subtle.wrapKey("jwk", privateKey, passwordKey, "AES-KW");
+// Храним wrappedKey — без пароля пользователя он бесполезен
+```
+
+---
+
+### 2. Sync Key передаётся через незащищённый Firestore
+
+**Файлы:** `encryption.ts` → `generateSyncKey()`, `firestore.rules` → `/device_sync/{sessionId}`
+
+Ключ синхронизации устройств генерируется как сырой AES-256 в base64 и, судя по архитектуре, сохраняется в коллекцию `device_sync`. Правило доступа к этой коллекции:
+
+```js
+allow read, write: if request.auth != null;
+```
+
+Любой авторизованный пользователь приложения может прочитать sync key другого пользователя и расшифровать его сессию синхронизации.
+
+**Путь решения:** Два независимых шага. Во-первых, ограничить доступ к документу только его владельцем:
+
+```js
+match /device_sync/{sessionId} {
+  allow read, write: if request.auth != null 
+    && request.auth.uid == resource.data.ownerId;
+}
+```
+
+Во-вторых, никогда не передавать sync key через сервер. Использовать QR-код или короткий PIN для передачи ключа между устройствами по защищённому каналу (аналог механизма linked devices в Signal/WhatsApp).
+
+---
+
+### 3. Коллекция `calls` открыта для всех авторизованных пользователей
+
+**Файл:** `firestore.rules` → `/calls/{callId}`
+
+```js
+allow read, write: if request.auth != null;
+```
+
+Любой залогиненный пользователь может читать и модифицировать данные любого звонка: SDP-офферы, ICE-кандидаты, статус звонка. Это открывает возможность перехвата WebRTC signaling, подмены SDP и потенциального встраивания в чужой звонок.
+
+**Путь решения:** Ограничить доступ участниками звонка, аналогично чатам:
+
+```js
+match /calls/{callId} {
+  allow read, write: if request.auth != null 
+    && request.auth.uid in resource.data.participants;
+  allow create: if request.auth != null 
+    && request.auth.uid in request.resource.data.participants;
+}
+```
+
+---
+
+## Существенные проблемы
+
+### 4. Storage: вложения доступны всем авторизованным пользователям
+
+**Файл:** `storage.rules`
+
+```js
+allow read: if request.auth != null;
+allow write: if request.auth != null && request.resource.size < 50 * 1024 * 1024;
+```
+
+Нет привязки к конкретному чату или пользователю. Любой авторизованный пользователь может скачать любое вложение, зная (или подобрав) имя файла, а также загрузить файл любого типа в любое место хранилища.
+
+**Путь решения:** Реструктурировать пути хранилища и добавить проверку участников:
+
+```js
+match /attachments/{chatId}/{userId}/{fileName} {
+  allow read: if request.auth != null 
+    && request.auth.uid in firestore.get(
+        /databases/(default)/documents/chats/$(chatId)
+      ).data.participants;
+  allow write: if request.auth != null
+    && request.auth.uid == userId
+    && request.auth.uid in firestore.get(
+        /databases/(default)/documents/chats/$(chatId)
+      ).data.participants
+    && request.resource.size < 50 * 1024 * 1024
+    && request.resource.contentType.matches('image/.*|video/.*|application/pdf');
+}
+```
+
+---
+
+### 5. Участник чата может редактировать и удалять чужие сообщения
+
+**Файл:** `firestore.rules` → `/chats/{chatId}/messages/{messageId}`
+
+Правило `allow read, write, create` включает в себя `update` и `delete` без проверки авторства сообщения.
+
+**Путь решения:** Разделить операции:
+
+```js
+match /messages/{messageId} {
+  allow read, create: if request.auth != null && isParticipant(chatId);
+  allow update, delete: if request.auth != null 
+    && request.auth.uid == resource.data.senderId;
+}
+```
+
+---
+
+### 6. Возможность создания чата без включения себя в participants
+
+**Файл:** `firestore.rules` → `/chats/{chatId}`
+
+При создании чата проверяется только то, что создатель находится в `participants`, но не проверяется, что он не создаёт чат от имени двух других пользователей, исключив себя из списка и добавив себя позже.
+
+**Путь решения:** Добавить явную проверку при создании:
+
+```js
+allow create: if request.auth != null 
+  && request.auth.uid in request.resource.data.participants
+  && request.resource.data.participants.size() >= 2;
+```
+
+---
+
+## Архитектурные замечания
+
+### 7. Отсутствие forward secrecy
+
+Статичные долгосрочные RSA-ключи не обеспечивают perfect forward secrecy. Если приватный ключ пользователя будет скомпрометирован, атакующий сможет расшифровать всю накопленную историю переписки. Signal решает эту проблему через Double Ratchet Protocol с эфемерными ключами.
+
+Полная реализация Double Ratchet требует значительной переработки архитектуры. На текущем этапе достаточно задокументировать это как known limitation и рассмотреть переход в будущем.
+
+---
+
+### 8. Длина RSA-ключа: 2048 бит
+
+2048-битный RSA считается достаточным для TLS, где ключи короткоживущие. В мессенджере RSA-ключ пользователя живёт неопределённо долго. NIST рекомендует 3072+ бит для данных с защитой за пределами 2030 года. Смена с 2048 на 4096 не требует архитектурных изменений — только замена одного числа в `generateSecureKeyPair()`.
+
+---
+
+### 9. Нестабильный алгоритм вычисления fingerprint
+
+**Файл:** `encryption.ts` → `getPublicKeyFingerprint()`
+
+```ts
+const jsonStr = JSON.stringify(jwk, Object.keys(jwk).sort());
+```
+
+JWK-представление ключа может незначительно отличаться между браузерами и версиями WebCrypto. Это делает fingerprint потенциально нестабильным при сравнении между разными платформами.
+
+**Путь решения:** Хэшировать ключ в каноническом SPKI-формате:
+
+```ts
+export async function getPublicKeyFingerprint(publicKey: CryptoKey): Promise<string> {
+  const spki = await crypto.subtle.exportKey("spki", publicKey);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", spki);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, "0")).join("")
+    .toUpperCase().match(/.{1,4}/g)?.join("-") || "";
+}
+```
+
+---
+
+## Сводная таблица
+
+| # | Проблема | Компонент | Критичность | Усилие исправления |
+|---|----------|-----------|-------------|-------------------|
+| 1 | Приватный ключ extractable | encryption.ts | 🔴 Критическая | Высокое |
+| 2 | Sync key в открытом Firestore | firestore.rules + encryption.ts | 🔴 Критическая | Среднее |
+| 3 | Calls без ACL | firestore.rules | 🔴 Критическая | Низкое |
+| 4 | Storage без привязки к чату | storage.rules | 🟡 Существенная | Низкое |
+| 5 | Редактирование чужих сообщений | firestore.rules | 🟡 Существенная | Низкое |
+| 6 | Создание чата без себя | firestore.rules | 🟡 Существенная | Низкое |
+| 7 | Нет forward secrecy | Архитектура | 🟠 Архитектурное | Очень высокое |
+| 8 | RSA 2048 бит | encryption.ts | 🟠 Архитектурное | Низкое |
+| 9 | Нестабильный fingerprint | encryption.ts | 🟠 Незначительное | Низкое |
+
+---
+
+## Приоритеты до релиза
+
+**Обязательно до публичного релиза:** проблемы 1–6. Они либо полностью ломают модель безопасности, либо дают произвольный доступ к чужим данным.
+
+**Можно отложить:** проблемы 7–9. Forward secrecy — это отдельный проект. RSA 4096 и стабильный fingerprint — малые правки, которые легко сделать в любой момент.
+
+---
+
+*Аудит проведён на основе firestore.rules, storage.rules и encryption.ts. Прочие компоненты (WebRTC signaling, auth flow, Cloud Functions) в данный аудит не включены.*
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-06-25T01:03:53+04:00.
+
+The user's current state is as follows:
+Active Document: c:\Users\pc\Downloads\post-messenger\src\App.tsx (LANGUAGE_TSX)
+Cursor is on line: 326
+Other open documents:
+- c:\Users\pc\Downloads\post-messenger\src\App.tsx (LANGUAGE_TSX)
+- c:\Users\pc\Downloads\post-messenger\functions\package.json (LANGUAGE_JSON)
+- c:\Users\pc\Downloads\post-messenger\functions\tsconfig.json (LANGUAGE_UNSPECIFIED)
+- c:\Users\pc\Downloads\post-messenger\functions\src\index.ts (LANGUAGE_TYPESCRIPT)
+- c:\Users\pc\Downloads\post-messenger\firebase.json (LANGUAGE_JSON)
+</ADDITIONAL_METADATA>
