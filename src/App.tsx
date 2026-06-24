@@ -337,10 +337,7 @@ export default function App() {
     const callsRef = collection(db, "calls");
     const q = query(
       callsRef,
-      or(
-        where("calleeId", "==", currentUser.uid),
-        where("callerId", "==", currentUser.uid)
-      )
+      where("participants", "array-contains", currentUser.uid)
     );
     const unsubscribe = onSnapshot(q, (snapshot) => {
       // Update call history
@@ -454,10 +451,14 @@ export default function App() {
                   myPrivateKeyJWK
                 );
                 newPreviews[chat.id] = decrypted;
+              } else {
+                newPreviews[chat.id] = "🔒 Encrypted Message";
               }
             } else {
               newPreviews[chat.id] = "History cleared";
             }
+          } else {
+            newPreviews[chat.id] = "No messages";
           }
         } catch (e) {
           // If decryption fails (e.g. no private key), fallback to encrypted text preview
