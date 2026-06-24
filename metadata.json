@@ -1,0 +1,6 @@
+{
+  "name": "Post Messenger",
+  "description": "Secure real-time messenger with peer-to-peer audio and video calls, local end-to-end encryption, and elegant responsive user interface.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

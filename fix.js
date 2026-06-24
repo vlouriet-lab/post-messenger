@@ -1,0 +1,1 @@
+const fs = require('fs'); const file = 'src/components/CallOverlay.tsx'; let code = fs.readFileSync(file, 'utf8'); code = code.replace(/\\\/g, '\').replace(/\\\$/g, '$'); fs.writeFileSync(file, code);
