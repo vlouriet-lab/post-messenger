@@ -7,12 +7,12 @@ importScripts('https://www.gstatic.com/firebasejs/12.0.0/firebase-messaging-comp
 
 const params = new URL(location).searchParams;
 firebase.initializeApp({
-  apiKey: params.get("apiKey"),
-  authDomain: params.get("authDomain"),
-  projectId: params.get("projectId"),
-  storageBucket: params.get("storageBucket"),
-  messagingSenderId: params.get("messagingSenderId"),
-  appId: params.get("appId")
+  apiKey: params.get("apiKey") || "AIzaSyCHMpo_fvMb6P1bD1lqB7Ok5v6IZo5wu0Q",
+  authDomain: params.get("authDomain") || "post-mess.web.app",
+  projectId: params.get("projectId") || "post-mess",
+  storageBucket: params.get("storageBucket") || "post-mess.firebasestorage.app",
+  messagingSenderId: params.get("messagingSenderId") || "888477540126",
+  appId: params.get("appId") || "1:888477540126:web:e941eb108c8e271ef2f30f"
 });
 
 const messaging = firebase.messaging();

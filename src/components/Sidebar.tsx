@@ -385,7 +385,7 @@ export default function Sidebar({
           <span>{t("keys_hosted_locally")}</span>
         </div>
         <div className="flex items-center gap-1">
-          <SettingsToggle />
+          <SettingsToggle currentUser={currentUser} />
           <button
             onClick={onLogout}
             title="Logout"

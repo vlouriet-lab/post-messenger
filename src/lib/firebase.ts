@@ -58,20 +58,26 @@ export const messaging = messagingInstance;
  * Requests notification permission, gets FCM token, and saves it to Firestore.
  * Stores multiple tokens per user (one per device/browser).
  */
-export const registerFCMToken = async (userId: string): Promise<void> => {
+export const registerFCMToken = async (userId: string, requestPermission: boolean = false): Promise<void> => {
   if (!messaging) return;
 
   try {
-    const permission = await Notification.requestPermission();
+    let permission = Notification.permission;
+    
+    // Only prompt if explicitly requested and we don't have it yet
+    if (permission === "default" && requestPermission) {
+      permission = await Notification.requestPermission();
+    }
+    
     if (permission !== "granted") {
-      console.log("[FCM] Notification permission denied.");
+      console.log("[FCM] Notification permission not granted.");
       return;
     }
 
     const vapidKey = import.meta.env.VITE_FIREBASE_VAPID_KEY;
     
-    const swUrl = `/firebase-messaging-sw.js?apiKey=${firebaseConfig.apiKey}&authDomain=${firebaseConfig.authDomain}&projectId=${firebaseConfig.projectId}&storageBucket=${firebaseConfig.storageBucket}&messagingSenderId=${firebaseConfig.messagingSenderId}&appId=${firebaseConfig.appId}`;
-    const registration = await navigator.serviceWorker.register(swUrl);
+    // Wait for Vite PWA to register the service worker
+    const registration = await navigator.serviceWorker.ready;
     
     const token = await getToken(messaging, { 
       vapidKey,

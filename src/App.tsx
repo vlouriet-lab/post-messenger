@@ -955,6 +955,7 @@ export default function App() {
       const callDoc = await addDoc(callsRef, {
         callerId: currentUser.uid,
         calleeId: targetId,
+        participants: [currentUser.uid, targetId],
         type,
         status: "calling",
         createdAt: serverTimestamp(),

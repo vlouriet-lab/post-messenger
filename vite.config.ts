@@ -40,7 +40,8 @@ export default defineConfig(() => {
           ]
         },
         workbox: {
-          navigateFallbackDenylist: [/^\/__\//]
+          navigateFallbackDenylist: [/^\/__\//],
+          importScripts: ['/firebase-messaging-sw.js']
         }
       })
     ],
