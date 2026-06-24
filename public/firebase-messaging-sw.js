@@ -7,7 +7,7 @@ importScripts('https://www.gstatic.com/firebasejs/12.0.0/firebase-messaging-comp
 
 const params = new URL(location).searchParams;
 firebase.initializeApp({
-  apiKey: params.get("apiKey") || "AIzaSyCHMpo_fvMb6P1bD1lqB7Ok5v6IZo5wu0Q",
+
   authDomain: params.get("authDomain") || "post-mess.web.app",
   projectId: params.get("projectId") || "post-mess",
   storageBucket: params.get("storageBucket") || "post-mess.firebasestorage.app",
